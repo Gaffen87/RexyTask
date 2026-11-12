@@ -1,0 +1,57 @@
+import { expect, test } from "bun:test"
+import { buildProjectTaskRows, buildSidebarEntries, moveTaskSelection } from "./rows.ts"
+import type { Task } from "./todoist.ts"
+
+function task(id: string, overrides: Partial<Task> = {}): Task {
+  return { id, content: `Task ${id}`, priority: 1, projectId: "project", ...overrides }
+}
+
+test("sidebar starts with Today and nests child projects under their parent", () => {
+  const entries = buildSidebarEntries([
+    { id: "work", name: "Work" },
+    { id: "home", name: "Home" },
+    { id: "clients", name: "Clients", parentId: "work" },
+  ])
+  expect(entries.map((entry) => [entry.name, entry.depth])).toEqual([
+    ["Today", 0],
+    ["Work", 0],
+    ["Clients", 1],
+    ["Home", 0],
+  ])
+})
+
+test("project rows put unsectioned tasks first, then sections in order with subtasks nested", () => {
+  const rows = buildProjectTaskRows(
+    [
+      task("later", { sectionId: "second" }),
+      task("second child", { parentId: "loose", childOrder: 2 }),
+      task("first child", { parentId: "loose", childOrder: 1 }),
+      task("loose"),
+      task("sooner", { sectionId: "first" }),
+    ],
+    [
+      { id: "second", name: "Second", projectId: "project", sectionOrder: 2 },
+      { id: "first", name: "First", projectId: "project", sectionOrder: 1 },
+      { id: "empty", name: "Empty", projectId: "project", sectionOrder: 3 },
+    ],
+  )
+  expect(rows.map((row) => (row.kind === "section" ? row.name : `${row.task.id}:${row.depth}`))).toEqual([
+    "loose:0",
+    "first child:1",
+    "second child:1",
+    "First",
+    "sooner:0",
+    "Second",
+    "later:0",
+  ])
+})
+
+test("task selection skips section headings and stops at the ends", () => {
+  const rows = buildProjectTaskRows(
+    [task("one"), task("two", { sectionId: "section" })],
+    [{ id: "section", name: "Section", projectId: "project" }],
+  )
+  expect(moveTaskSelection(rows, 0, 1)).toBe(2)
+  expect(moveTaskSelection(rows, 2, 1)).toBe(2)
+  expect(moveTaskSelection(rows, 2, -5)).toBe(0)
+})
