@@ -23,10 +23,10 @@ export function fitToWidth(text: string, width: number): string {
   return truncated + " ".repeat(Math.max(0, width - displayWidth(truncated)))
 }
 
-export function wrapToWidth(text: string, width: number): string[] {
+function wrapParagraph(paragraph: string, width: number): string[] {
   const lines: string[] = []
   let currentLine = ""
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  for (const word of paragraph.split(/\s+/).filter(Boolean)) {
     const candidate = currentLine ? `${currentLine} ${word}` : word
     if (displayWidth(candidate) <= width) {
       currentLine = candidate
@@ -35,8 +35,12 @@ export function wrapToWidth(text: string, width: number): string[] {
     if (currentLine) lines.push(currentLine)
     currentLine = truncateToWidth(word, width)
   }
-  if (currentLine) lines.push(currentLine)
+  lines.push(currentLine)
   return lines
+}
+
+export function wrapToWidth(text: string, width: number): string[] {
+  return text.split(/\r?\n/).flatMap((paragraph) => wrapParagraph(paragraph, width))
 }
 
 // Todoist content is Markdown and may hold line breaks or escape codes.
@@ -60,6 +64,7 @@ export const style = {
   red: paired(31, 39),
   green: paired(32, 39),
   yellow: paired(33, 39),
-  blue: paired(34, 39),
+  magenta: paired(35, 39),
   cyan: paired(36, 39),
+  blueBackground: paired(44, 49),
 }

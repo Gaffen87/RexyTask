@@ -1,19 +1,18 @@
 import { expect, test } from "bun:test"
-import { buildProjectTaskRows, buildSidebarEntries, moveTaskSelection } from "./rows.ts"
+import { buildProjectTaskRows, buildProjectEntries, moveTaskSelection } from "./rows.ts"
 import type { Task } from "./todoist.ts"
 
 function task(id: string, overrides: Partial<Task> = {}): Task {
   return { id, content: `Task ${id}`, priority: 1, projectId: "project", ...overrides }
 }
 
-test("sidebar starts with Today and nests child projects under their parent", () => {
-  const entries = buildSidebarEntries([
+test("child projects are nested under their parent", () => {
+  const entries = buildProjectEntries([
     { id: "work", name: "Work" },
     { id: "home", name: "Home" },
     { id: "clients", name: "Clients", parentId: "work" },
   ])
   expect(entries.map((entry) => [entry.name, entry.depth])).toEqual([
-    ["Today", 0],
     ["Work", 0],
     ["Clients", 1],
     ["Home", 0],

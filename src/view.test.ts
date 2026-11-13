@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { buildSidebarEntries, buildTodayTaskRows } from "./rows.ts"
+import { buildDatedTaskRows, buildProjectEntries, VIEW_ENTRIES } from "./rows.ts"
 import { displayWidth, truncateToWidth } from "./text.ts"
 import { dueLabel, renderScreen, scrollOffsetFor, type ViewState } from "./view.ts"
 
@@ -26,11 +26,15 @@ test("the selected row stays in view", () => {
 test("every line of the screen is exactly as wide as the terminal", () => {
   const projects = [{ id: "work", name: "Work 仕事" }]
   const state: ViewState = {
-    entries: buildSidebarEntries(projects),
-    selectedEntryIndex: 0,
+    views: VIEW_ENTRIES,
+    projects: buildProjectEntries(projects),
+    selectedViewIndex: 0,
+    selectedProjectIndex: 0,
+    activeSource: "views",
+    focusedPanel: "tasks",
     taskList: {
       status: "loaded",
-      rows: buildTodayTaskRows(
+      rows: buildDatedTaskRows(
         [
           {
             id: "1",
@@ -47,13 +51,13 @@ test("every line of the screen is exactly as wide as the terminal", () => {
       ),
     },
     selectedTaskRowIndex: 0,
-    focusedColumn: "tasks",
+    claudeStatuses: { "1": { state: "working", note: "reading 📚", updatedAt: "2026-11-12T10:00:00Z" } },
     statusMessage: "updated 14:02",
     todayDate: TODAY,
   }
-  for (const width of [30, 47, 80, 133]) {
-    const lines = renderScreen(state, width, 24)
-    expect(lines).toHaveLength(24)
+  for (const [width, height] of [[40, 10], [47, 15], [80, 24], [133, 50]] as const) {
+    const lines = renderScreen(state, width, height)
+    expect(lines).toHaveLength(height)
     for (const line of lines) expect(displayWidth(line)).toBe(width)
   }
 })

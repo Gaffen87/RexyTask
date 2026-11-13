@@ -1,18 +1,24 @@
 // Turns Todoist's flat lists into the ordered, indented rows of the two columns.
 import type { Project, Section, Task } from "./todoist.ts"
 
+export type DatedView = "today" | "upcoming"
+
 export type SidebarEntry = {
   key: string
   name: string
   depth: number
   projectId?: string
+  datedView?: DatedView
 }
 
 export type TaskRow =
   | { kind: "section"; name: string }
   | { kind: "task"; task: Task; depth: number; projectName?: string }
 
-export const TODAY_ENTRY: SidebarEntry = { key: "today", name: "Today", depth: 0 }
+export const VIEW_ENTRIES: SidebarEntry[] = [
+  { key: "today", name: "Today", depth: 0, datedView: "today" },
+  { key: "upcoming", name: "Upcoming", depth: 0, datedView: "upcoming" },
+]
 
 type Nested = { id: string; parentId?: string | null; childOrder?: number }
 
@@ -43,14 +49,13 @@ function flattenTree<Item extends Nested>(items: Item[]): { item: Item; depth: n
   return flattened
 }
 
-export function buildSidebarEntries(projects: Project[]): SidebarEntry[] {
-  const projectEntries = flattenTree(projects).map(({ item: project, depth }) => ({
+export function buildProjectEntries(projects: Project[]): SidebarEntry[] {
+  return flattenTree(projects).map(({ item: project, depth }) => ({
     key: `project:${project.id}`,
     name: project.name,
     depth,
     projectId: project.id,
   }))
-  return [TODAY_ENTRY, ...projectEntries]
 }
 
 function taskRowsOf(tasks: Task[]): TaskRow[] {
@@ -73,7 +78,7 @@ export function buildProjectTaskRows(tasks: Task[], sections: Section[]): TaskRo
   return rows
 }
 
-export function buildTodayTaskRows(tasks: Task[], projects: Project[]): TaskRow[] {
+export function buildDatedTaskRows(tasks: Task[], projects: Project[]): TaskRow[] {
   const projectNamesById = new Map(projects.map((project) => [project.id, project.name]))
   return tasks.map((task) => ({
     kind: "task",

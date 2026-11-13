@@ -26,6 +26,8 @@ if [ -z "${REXYTASK_BIN:-}" ]; then
   fi
 fi
 
+rex_bin=${REX_BIN:-$(command -v rex || echo rex)}
+
 lua_quoted() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -36,6 +38,7 @@ mkdir -p "$config_dir"
   echo "-- install.sh of RexyTask writes this file. Do not edit it. Your settings are in rexytask.lua."
   echo "local REXYTASK_BIN = \"$(lua_quoted "$rexytask_bin")\""
   echo "local TD_BIN = \"$(lua_quoted "$td_bin")\""
+  echo "local REX_BIN = \"$(lua_quoted "$rex_bin")\""
   echo
   cat "$plugin_dir/lua/rexytask_toggle.lua"
 } > "$toggle_file"

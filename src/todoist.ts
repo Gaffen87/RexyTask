@@ -18,6 +18,7 @@ export type Task = {
   parentId?: string | null
   childOrder?: number
   labels?: string[]
+  url?: string
 }
 
 export type Project = {
@@ -65,6 +66,10 @@ export class TodoistClient {
 
   listTodayTasks(): Promise<Task[]> {
     return this.list<Task>(["today"])
+  }
+
+  listUpcomingTasks(): Promise<Task[]> {
+    return this.list<Task>(["upcoming"])
   }
 
   listProjectTasks(projectId: string): Promise<Task[]> {

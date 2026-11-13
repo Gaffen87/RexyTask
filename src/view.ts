@@ -1,4 +1,6 @@
-// Draws the whole screen as lines of exactly the terminal's width. It reads no state of its own.
+// Draws the whole screen, in the style of lazygit, as lines of exactly the terminal's width.
+// It reads no state of its own.
+import type { ClaudeStatus, ClaudeStatuses } from "./claudeStatus.ts"
 import type { SidebarEntry, TaskRow } from "./rows.ts"
 import type { Due, Task } from "./todoist.ts"
 import { displayWidth, fitToWidth, plainText, style, truncateToWidth, wrapToWidth } from "./text.ts"
@@ -8,20 +10,24 @@ export type TaskListState =
   | { status: "loaded"; rows: TaskRow[] }
   | { status: "failed"; message: string; hints: string[] }
 
-export type Column = "projects" | "tasks"
+export type SourcePanel = "views" | "projects"
+export type Panel = SourcePanel | "tasks"
 
 export type ViewState = {
-  entries: SidebarEntry[]
-  selectedEntryIndex: number
+  views: SidebarEntry[]
+  projects: SidebarEntry[]
+  selectedViewIndex: number
+  selectedProjectIndex: number
+  activeSource: SourcePanel
+  focusedPanel: Panel
   taskList: TaskListState
   selectedTaskRowIndex: number
-  focusedColumn: Column
+  claudeStatuses: ClaudeStatuses
   statusMessage: string
   todayDate: string
 }
 
-const KEY_HINTS = "↑↓ move   tab column   r refresh   q quit"
-const DETAIL_HEIGHT = 4
+const KEY_HINTS = "Move: ↑↓ | Panel: tab, 1-3 | Send to Claude: s | Refresh: r | Quit: q"
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export function localDateOf(moment: Date): string {
@@ -50,19 +56,18 @@ export function dueLabel(due: Due, todayDate: string): string {
   return due.isRecurring ? `↻ ${label}` : label
 }
 
-function styledDue(due: Due, todayDate: string): { text: string; styled: string } {
-  const text = dueLabel(due, todayDate)
+function colorOfDue(due: Due, todayDate: string): (text: string) => string {
   const dayOffset = daysBetween(todayDate, due.date.split("T")[0] ?? "")
-  if (dayOffset < 0) return { text, styled: style.red(text) }
-  if (dayOffset === 0) return { text, styled: style.green(text) }
-  return { text, styled: text }
+  if (dayOffset < 0) return style.red
+  if (dayOffset === 0) return style.green
+  return (text) => text
 }
 
 // Todoist's API counts priority upward: 4 is p1, the highest.
 function priorityMarker(priority: number): string {
   if (priority === 4) return style.red("●")
   if (priority === 3) return style.yellow("●")
-  if (priority === 2) return style.blue("●")
+  if (priority === 2) return style.cyan("●")
   return "○"
 }
 
@@ -70,9 +75,15 @@ function priorityName(priority: number): string {
   return `p${5 - Math.min(4, Math.max(1, priority))}`
 }
 
+function claudeLabel(status: ClaudeStatus): { text: string; color: (text: string) => string } {
+  if (status.state === "done") return { text: "✓ done", color: style.green }
+  if (status.state === "working") return { text: "⟳ working", color: style.magenta }
+  return { text: "→ sent", color: style.magenta }
+}
+
 function highlight(line: string, isSelected: boolean, isFocused: boolean): string {
   if (!isSelected) return line
-  return isFocused ? style.reverse(line) : style.reverse(style.dim(line))
+  return isFocused ? style.blueBackground(style.bold(line)) : style.bold(line)
 }
 
 // Keeps the selected row near the middle, so no scroll position needs storing.
@@ -81,125 +92,199 @@ export function scrollOffsetFor(selectedIndex: number, rowCount: number, visible
   return Math.min(lastOffset, Math.max(0, selectedIndex - Math.floor(visibleCount / 2)))
 }
 
-function sidebarLines(state: ViewState, width: number, height: number): string[] {
-  const scrollOffset = scrollOffsetFor(state.selectedEntryIndex, state.entries.length, height)
-  const lines: string[] = []
-  for (let lineIndex = 0; lineIndex < height; lineIndex++) {
-    const entryIndex = scrollOffset + lineIndex
-    const entry = state.entries[entryIndex]
-    if (!entry) {
-      lines.push(" ".repeat(width))
-      continue
-    }
-    const line = fitToWidth(` ${"  ".repeat(entry.depth)}${entry.name}`, width)
-    lines.push(highlight(line, entryIndex === state.selectedEntryIndex, state.focusedColumn === "projects"))
-  }
-  return lines
+type PanelFrame = {
+  title: string
+  footer?: string
+  width: number
+  height: number
+  isFocused: boolean
+  contentLines: string[]
 }
 
-function taskLine(row: TaskRow, width: number, todayDate: string): string {
-  if (row.kind === "section") return style.bold(fitToWidth(` ${row.name}`, width))
+function framePanel({ title, footer = "", width, height, isFocused, contentLines }: PanelFrame): string[] {
+  if (height <= 0) return []
+  const border = isFocused ? (text: string) => style.green(style.bold(text)) : (text: string) => text
+  const innerWidth = width - 2
+  const shownTitle = truncateToWidth(title, innerWidth - 2)
+  const shownFooter = truncateToWidth(footer, innerWidth - 2)
+  const topRule = "─".repeat(innerWidth - 1 - displayWidth(shownTitle))
+  const bottomRule = "─".repeat(innerWidth - 1 - displayWidth(shownFooter))
+  const framed = [border(`╭─${shownTitle}${topRule}╮`)]
+  for (let lineIndex = 0; lineIndex < height - 2; lineIndex++) {
+    framed.push(border("│") + (contentLines[lineIndex] ?? " ".repeat(innerWidth)) + border("│"))
+  }
+  framed.push(border(`╰${bottomRule}${shownFooter}─╯`))
+  return framed.slice(0, height)
+}
+
+function positionFooter(selectedPosition: number, itemCount: number): string {
+  return itemCount > 0 ? `${selectedPosition} of ${itemCount}` : ""
+}
+
+function entryPanel(
+  title: string,
+  entries: SidebarEntry[],
+  selectedIndex: number,
+  showsSelection: boolean,
+  isFocused: boolean,
+  width: number,
+  height: number,
+): string[] {
+  const innerWidth = width - 2
+  const scrollOffset = scrollOffsetFor(selectedIndex, entries.length, height - 2)
+  const contentLines = entries.slice(scrollOffset, scrollOffset + height - 2).map((entry, visibleIndex) => {
+    const line = fitToWidth(`${"  ".repeat(entry.depth)}${entry.name}`, innerWidth)
+    return highlight(line, showsSelection && scrollOffset + visibleIndex === selectedIndex, isFocused)
+  })
+  const footer = positionFooter(selectedIndex + 1, entries.length)
+  return framePanel({ title, footer, width, height, isFocused, contentLines })
+}
+
+const SHORTEST_TITLE_WIDTH = 8
+
+// The trailing labels give way, last one first, before the title gets too short to read.
+function taskLine(row: TaskRow, width: number, todayDate: string, claudeStatuses: ClaudeStatuses): string {
+  if (row.kind === "section") return style.bold(style.cyan(fitToWidth(row.name, width)))
   const { task, depth, projectName } = row
-  const indent = " ".repeat(1 + depth * 2)
-  const due = task.due ? styledDue(task.due, todayDate) : null
-  const trailingWidthLimit = Math.floor(width * 0.45)
-  const dueText = due ? truncateToWidth(due.text, trailingWidthLimit) : ""
-  const projectText = projectName
-    ? truncateToWidth(projectName, trailingWidthLimit - displayWidth(dueText) - 2)
-    : ""
-  const trailingParts = [
-    dueText && (dueText === due?.text ? due.styled : dueText),
-    projectText && style.dim(projectText),
-  ].filter(Boolean)
-  const trailingWidth =
-    displayWidth(dueText) + displayWidth(projectText) + (dueText && projectText ? 2 : 0)
-  const titleWidth = width - displayWidth(indent) - 2 - (trailingWidth ? trailingWidth + 2 : 1)
+  const indent = "  ".repeat(Math.min(depth, Math.floor(width / 6)))
+  const identity = (text: string) => text
+  const claudeStatus = claudeStatuses[task.id]
+  const claude = claudeStatus && claudeLabel(claudeStatus)
+  const candidateLabels = [
+    claude && { text: claude.text, color: claude.color },
+    task.due && { text: dueLabel(task.due, todayDate), color: colorOfDue(task.due, todayDate) },
+    projectName && { text: truncateToWidth(projectName, Math.floor(width * 0.25)), color: style.cyan },
+  ].filter((label) => !!label)
+
+  let titleWidth = width - displayWidth(indent) - 2
+  let trailing = ""
+  for (const label of candidateLabels) {
+    const labelWidth = displayWidth(label.text) + 2
+    if (titleWidth - labelWidth < SHORTEST_TITLE_WIDTH) break
+    titleWidth -= labelWidth
+    trailing += `  ${(label.color ?? identity)(label.text)}`
+  }
   const title = fitToWidth(plainText(task.content), Math.max(0, titleWidth))
-  const trailing = trailingWidth ? ` ${trailingParts.join("  ")} ` : " "
   return `${indent}${priorityMarker(task.priority)} ${title}${trailing}`
 }
 
 function messageLines(message: string, hints: string[], width: number): string[] {
-  const textWidth = Math.max(1, width - 2)
-  const lines = wrapToWidth(message, textWidth).map((line) => fitToWidth(` ${line}`, width))
+  const lines = wrapToWidth(message, width).map((line) => fitToWidth(line, width))
   for (const hint of hints) {
-    for (const line of wrapToWidth(hint, textWidth)) lines.push(style.dim(fitToWidth(` ${line}`, width)))
+    for (const line of wrapToWidth(hint, width)) lines.push(style.dim(fitToWidth(line, width)))
   }
   return lines
 }
 
-function detailLines(task: Task, projectName: string | undefined, width: number, todayDate: string): string[] {
-  const metaParts = [priorityName(task.priority)]
-  if (task.due) metaParts.push(`due ${dueLabel(task.due, todayDate)}`)
-  if (projectName) metaParts.push(projectName)
-  for (const label of task.labels ?? []) metaParts.push(`@${label}`)
-  return [
-    style.dim("─".repeat(width)),
-    style.bold(fitToWidth(` ${plainText(task.content)}`, width)),
-    style.dim(fitToWidth(` ${metaParts.join(" · ")}`, width)),
-    fitToWidth(` ${plainText(task.description ?? "")}`, width),
-  ]
-}
-
-function tasksColumnLines(state: ViewState, width: number, height: number): string[] {
+function tasksPanel(state: ViewState, width: number, height: number): string[] {
+  const innerWidth = width - 2
+  const isFocused = state.focusedPanel === "tasks"
   const { taskList } = state
-  let lines: string[]
+  let contentLines: string[]
+  let footer = ""
   if (taskList.status === "loading") {
-    lines = [style.dim(fitToWidth(" Loading…", width))]
+    contentLines = [style.dim(fitToWidth("Loading…", innerWidth))]
   } else if (taskList.status === "failed") {
-    lines = messageLines(taskList.message, taskList.hints, width)
+    contentLines = messageLines(taskList.message, taskList.hints, innerWidth)
   } else if (taskList.rows.length === 0) {
-    lines = [style.dim(fitToWidth(" No tasks", width))]
+    contentLines = [style.dim(fitToWidth("No tasks", innerWidth))]
   } else {
-    const selectedRow = taskList.rows[state.selectedTaskRowIndex]
-    const showsDetail = selectedRow?.kind === "task" && height >= DETAIL_HEIGHT * 2
-    const listHeight = showsDetail ? height - DETAIL_HEIGHT : height
-    const scrollOffset = scrollOffsetFor(state.selectedTaskRowIndex, taskList.rows.length, listHeight)
-    lines = taskList.rows.slice(scrollOffset, scrollOffset + listHeight).map((row, visibleIndex) => {
+    const { rows } = taskList
+    const scrollOffset = scrollOffsetFor(state.selectedTaskRowIndex, rows.length, height - 2)
+    contentLines = rows.slice(scrollOffset, scrollOffset + height - 2).map((row, visibleIndex) => {
       const isSelected = row.kind === "task" && scrollOffset + visibleIndex === state.selectedTaskRowIndex
-      return highlight(taskLine(row, width, state.todayDate), isSelected, state.focusedColumn === "tasks")
+      return highlight(taskLine(row, innerWidth, state.todayDate, state.claudeStatuses), isSelected, isFocused)
     })
-    while (lines.length < listHeight) lines.push(" ".repeat(width))
-    if (showsDetail) {
-      lines.push(...detailLines(selectedRow.task, selectedRow.projectName, width, state.todayDate))
-    }
+    const isTask = (row: TaskRow) => row.kind === "task"
+    const selectedPosition = rows.slice(0, state.selectedTaskRowIndex + 1).filter(isTask).length
+    footer = positionFooter(selectedPosition, rows.filter(isTask).length)
   }
-  while (lines.length < height) lines.push(" ".repeat(width))
-  return lines.slice(0, height)
+  return framePanel({ title: "[3]─Tasks", footer, width, height, isFocused, contentLines })
 }
 
-function taskCountLabel(taskList: TaskListState): string {
-  if (taskList.status !== "loaded") return ""
-  const taskCount = taskList.rows.filter((row) => row.kind === "task").length
-  return taskCount === 1 ? "1 task" : `${taskCount} tasks`
+function detailLines(
+  task: Task,
+  projectName: string | undefined,
+  claudeStatus: ClaudeStatus | undefined,
+  width: number,
+  todayDate: string,
+): string[] {
+  const field = (name: string, value: string) =>
+    style.cyan(`${name}: `) + fitToWidth(value, width - displayWidth(name) - 2)
+  const lines = wrapToWidth(plainText(task.content), width).map((line) => style.bold(fitToWidth(line, width)))
+  lines.push(" ".repeat(width))
+  if (claudeStatus) {
+    const note = claudeStatus.note ? `: ${plainText(claudeStatus.note)}` : ""
+    lines.push(field("Claude", `${claudeLabel(claudeStatus).text}${note}`))
+  }
+  lines.push(field("Priority", priorityName(task.priority)))
+  if (task.due) lines.push(field("Due", dueLabel(task.due, todayDate)))
+  if (projectName) lines.push(field("Project", projectName))
+  if (task.labels?.length) lines.push(field("Labels", task.labels.join(", ")))
+  if (task.description?.trim()) {
+    lines.push(" ".repeat(width))
+    const description = task.description.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ")
+    for (const line of wrapToWidth(description, width)) lines.push(fitToWidth(line, width))
+  }
+  return lines
+}
+
+function detailPanel(state: ViewState, width: number, height: number): string[] {
+  const selectedRow = state.taskList.status === "loaded" ? state.taskList.rows[state.selectedTaskRowIndex] : undefined
+  const contentLines =
+    selectedRow?.kind === "task"
+      ? detailLines(
+          selectedRow.task,
+          selectedRow.projectName,
+          state.claudeStatuses[selectedRow.task.id],
+          width - 2,
+          state.todayDate,
+        )
+      : []
+  return framePanel({ title: "Task", width, height, isFocused: false, contentLines })
+}
+
+function hintLine(statusMessage: string, width: number): string {
+  const hints = truncateToWidth(KEY_HINTS, width - 2)
+  const status = truncateToWidth(statusMessage, Math.max(0, width - displayWidth(hints) - 4))
+  const gap = " ".repeat(Math.max(1, width - displayWidth(hints) - displayWidth(status) - 2))
+  return fitToWidth(` ${hints}${gap}${status}`, width).replace(hints, style.cyan(hints))
 }
 
 export function renderScreen(state: ViewState, width: number, height: number): string[] {
-  if (width < 30 || height < 5) return [truncateToWidth("RexyTask needs a larger pane", width)]
-  const longestEntryWidth = Math.max(
-    ...state.entries.map((entry) => displayWidth(entry.name) + entry.depth * 2),
-  )
-  const sidebarWidth = Math.min(Math.max(longestEntryWidth + 3, 16), Math.floor(width * 0.35))
-  const tasksWidth = width - sidebarWidth - 1
-  const bodyHeight = height - 3
-  const divider = style.dim("│")
+  if (width < 40 || height < 10) return [truncateToWidth("RexyTask needs a larger pane", width)]
+  const panelsHeight = height - 1
+  const leftWidth = Math.min(Math.max(Math.floor(width / 3), 24), 44)
+  const rightWidth = width - leftWidth
+  const viewsHeight = state.views.length + 2
+  const detailHeight = panelsHeight >= 16 ? Math.max(8, Math.floor(panelsHeight * 0.3)) : 0
 
-  const selectedEntryName = state.entries[state.selectedEntryIndex]?.name ?? ""
-  const countLabel = taskCountLabel(state.taskList)
-  const tasksHeading =
-    style.bold(fitToWidth(` ${selectedEntryName}`, tasksWidth - displayWidth(countLabel) - 1)) +
-    style.dim(`${countLabel} `)
-
-  const sidebar = sidebarLines(state, sidebarWidth, bodyHeight)
-  const tasks = tasksColumnLines(state, tasksWidth, bodyHeight)
-  const statusWidth = Math.max(0, width - displayWidth(KEY_HINTS) - 3)
-  const status = truncateToWidth(state.statusMessage, statusWidth)
-  const footerGap = " ".repeat(Math.max(1, width - displayWidth(KEY_HINTS) - displayWidth(status) - 2))
-
+  const leftLines = [
+    ...entryPanel(
+      "[1]─Views",
+      state.views,
+      state.selectedViewIndex,
+      state.activeSource === "views",
+      state.focusedPanel === "views",
+      leftWidth,
+      viewsHeight,
+    ),
+    ...entryPanel(
+      "[2]─Projects",
+      state.projects,
+      state.selectedProjectIndex,
+      state.activeSource === "projects",
+      state.focusedPanel === "projects",
+      leftWidth,
+      panelsHeight - viewsHeight,
+    ),
+  ]
+  const rightLines = [
+    ...tasksPanel(state, rightWidth, panelsHeight - detailHeight),
+    ...detailPanel(state, rightWidth, detailHeight),
+  ]
   return [
-    style.bold(fitToWidth(" Projects", sidebarWidth)) + divider + tasksHeading,
-    style.dim("─".repeat(sidebarWidth) + "┼" + "─".repeat(tasksWidth)),
-    ...sidebar.map((sidebarLine, lineIndex) => sidebarLine + divider + (tasks[lineIndex] ?? "")),
-    style.dim(fitToWidth(` ${KEY_HINTS}${footerGap}${status}`, width)),
+    ...leftLines.map((leftLine, lineIndex) => leftLine + (rightLines[lineIndex] ?? "")),
+    hintLine(state.statusMessage, width),
   ]
 }

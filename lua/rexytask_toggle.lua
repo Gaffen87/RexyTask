@@ -1,5 +1,5 @@
--- install.sh writes this code under lines that set REXYTASK_BIN and TD_BIN, the paths of
--- the task viewer and of the Todoist CLI.
+-- install.sh writes this code under lines that set REXYTASK_BIN, TD_BIN and REX_BIN, the
+-- paths of the task viewer, the Todoist CLI and the Rex CLI.
 
 local PLACEMENTS = { split = true, zoomed = true, tab = true, overlay = true }
 local SPLIT_DIRECTIONS = { right = "horizontal", down = "vertical" }
@@ -37,11 +37,26 @@ local function check_viewer_runs()
   if not result.ok then error((result.stderr:gsub("%s+$", "")), 0) end
 end
 
-local function open_tasks(focused_block_id, window_id, placement, direction, ratio)
+-- The viewer pastes a task into the pane it was opened from, where Claude Code runs.
+-- An overlay or a zoomed pane covers that pane, so the viewer closes after sending.
+local function viewer_command(session_id, focused_block_id, placement)
+  local command = { REXYTASK_BIN, "--td", TD_BIN, "--rex", REX_BIN }
+  if session_id and focused_block_id then
+    for _, argument in ipairs({ "--session", session_id, "--agent", focused_block_id }) do
+      table.insert(command, argument)
+    end
+    if placement == "overlay" or placement == "zoomed" then
+      table.insert(command, "--close-after-send")
+    end
+  end
+  return command
+end
+
+local function open_tasks(session_id, focused_block_id, window_id, placement, direction, ratio)
   local pane = rex.layout.block{
     flavor = TERMINAL .. ".shell",
     label = PANE_LABEL,
-    options = { command = { REXYTASK_BIN, "--td", TD_BIN } },
+    options = { command = viewer_command(session_id, focused_block_id, placement) },
   }
   if placement == "tab" then
     return must(rex.session.new_window{ window_label = PANE_LABEL, layout = pane })
@@ -105,7 +120,7 @@ return function(settings)
       local open_pane_ids = open_task_panes(blocks, window_id)
       if #open_pane_ids == 0 then
         check_viewer_runs()
-        return open_tasks(ctx.block_id, window_id, placement, direction, ratio)
+        return open_tasks(ctx.session_id, ctx.block_id, window_id, placement, direction, ratio)
       end
       for _, pane_id in ipairs(open_pane_ids) do
         must(rex.call("block.close", { session_id = ctx.session_id, block_id = pane_id }))
