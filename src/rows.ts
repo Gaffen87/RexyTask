@@ -88,21 +88,55 @@ export function buildDatedTaskRows(tasks: Task[], projects: Project[]): TaskRow[
   }))
 }
 
-// Returns the index of the next task row in that direction, skipping section headings.
-export function moveTaskSelection(rows: TaskRow[], fromIndex: number, step: number): number {
-  const direction = step < 0 ? -1 : 1
-  let selectedIndex = fromIndex
-  let remainingSteps = Math.abs(step)
-  for (
-    let candidateIndex = fromIndex + direction;
-    candidateIndex >= 0 && candidateIndex < rows.length && remainingSteps > 0;
-    candidateIndex += direction
-  ) {
-    if (rows[candidateIndex]?.kind !== "task") continue
-    selectedIndex = candidateIndex
-    remainingSteps -= 1
+export function subtaskCountAt(rows: TaskRow[], taskRowIndex: number): number {
+  const parentRow = rows[taskRowIndex]
+  if (parentRow?.kind !== "task") return 0
+  let subtaskCount = 0
+  for (let rowIndex = taskRowIndex + 1; rowIndex < rows.length; rowIndex++) {
+    const followingRow = rows[rowIndex]
+    if (followingRow?.kind !== "task" || followingRow.depth <= parentRow.depth) break
+    subtaskCount += 1
   }
-  return selectedIndex
+  return subtaskCount
+}
+
+// A subtask is shown only when every task above it in its tree is expanded.
+export function visibleRowIndexes(rows: TaskRow[], expandedTaskIds: ReadonlySet<string>): number[] {
+  const visibleIndexes: number[] = []
+  let collapsedDepth: number | undefined
+  rows.forEach((row, rowIndex) => {
+    if (row.kind === "task" && collapsedDepth !== undefined && row.depth > collapsedDepth) return
+    collapsedDepth = undefined
+    visibleIndexes.push(rowIndex)
+    const nextRow = rows[rowIndex + 1]
+    const hasSubtasks = row.kind === "task" && nextRow?.kind === "task" && nextRow.depth > row.depth
+    if (hasSubtasks && !expandedTaskIds.has(row.task.id)) collapsedDepth = row.depth
+  })
+  return visibleIndexes
+}
+
+// Returns the row itself when it is shown, or else the collapsed task that hides it.
+export function shownRowIndex(rows: TaskRow[], rowIndex: number, expandedTaskIds: ReadonlySet<string>): number {
+  return visibleRowIndexes(rows, expandedTaskIds).findLast((visibleIndex) => visibleIndex <= rowIndex) ?? -1
+}
+
+// Returns the index of the next shown task row in that direction, skipping section headings.
+export function moveTaskSelection(
+  rows: TaskRow[],
+  fromIndex: number,
+  step: number,
+  expandedTaskIds: ReadonlySet<string>,
+): number {
+  const shownTaskIndexes = visibleRowIndexes(rows, expandedTaskIds).filter(
+    (rowIndex) => rows[rowIndex]?.kind === "task",
+  )
+  if (shownTaskIndexes.length === 0) return fromIndex
+  const currentPosition = step < 0
+    ? shownTaskIndexes.findIndex((rowIndex) => rowIndex >= fromIndex)
+    : shownTaskIndexes.findLastIndex((rowIndex) => rowIndex <= fromIndex)
+  const startPosition = currentPosition >= 0 ? currentPosition : step < 0 ? shownTaskIndexes.length : -1
+  const targetPosition = Math.min(shownTaskIndexes.length - 1, Math.max(0, startPosition + step))
+  return shownTaskIndexes[targetPosition] ?? fromIndex
 }
 
 // Removes a task with the subtasks under it, and any section heading left with no tasks.

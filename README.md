@@ -31,7 +31,8 @@ The screen is laid out like [lazygit](https://github.com/jesseduffield/lazygit):
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>k</kbd> <kbd>j</kbd> | Move the selection |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Jump to Views, Projects, or Tasks |
 | <kbd>Tab</kbd>, or <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Go to the next or previous panel |
-| <kbd>Enter</kbd> | Go to the tasks |
+| <kbd>Enter</kbd> | Go to the tasks. In the tasks, open or close the selected task's subtasks |
+| <kbd>Space</kbd> | Open or close the selected task's subtasks |
 | <kbd>g</kbd> <kbd>G</kbd> | Jump to the first or last row |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
 | <kbd>d</kbd> | Mark the selected task as done, with its subtasks |
@@ -42,7 +43,7 @@ The screen is laid out like [lazygit](https://github.com/jesseduffield/lazygit):
 
 - **Views** lists Today and Upcoming (the next 7 days).
 - **Projects** lists your projects.
-- **Tasks** lists the tasks of the view or project you selected, grouped by section, with subtasks indented. The dot before a task shows its priority: red for p1, yellow for p2, cyan for p3.
+- **Tasks** lists the tasks of the view or project you selected, grouped by section. A task with subtasks starts closed, marked `▸` with a count of its subtasks. Open it to see them indented below. The dot before a task shows its priority: red for p1, yellow for p2, cyan for p3.
 - **Task** shows the selected task's full title, priority, due date, labels and description.
 
 ## Working with Claude Code

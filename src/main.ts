@@ -18,6 +18,8 @@ import {
   firstTaskIndex,
   moveTaskSelection,
   nearestTaskIndex,
+  shownRowIndex,
+  subtaskCountAt,
   VIEW_ENTRIES,
   withoutTaskAt,
   type SidebarEntry,
@@ -84,6 +86,7 @@ let pendingTaskChangeCount = 0
 let lastCompletedTask: Task | undefined
 const taskListsByEntryKey = new Map<string, TaskListState>()
 const selectedTaskRowByEntryKey = new Map<string, number>()
+const expandedTaskIds = new Set<string>()
 
 function activeEntry(): SidebarEntry | undefined {
   return activeSource === "views" ? VIEW_ENTRIES[selectedViewIndex] : projectEntries[selectedProjectIndex]
@@ -106,6 +109,7 @@ function render() {
       focusedPanel,
       taskList: activeTaskList(),
       selectedTaskRowIndex: selectedTaskRowByEntryKey.get(activeEntry()?.key ?? "") ?? -1,
+      expandedTaskIds,
       claudeStatuses,
       statusMessage,
       todayDate: localDateOf(new Date()),
@@ -149,7 +153,8 @@ async function loadTaskList(entry: SidebarEntry) {
   if (taskList.status === "loaded") {
     const previousIndex = selectedTaskRowByEntryKey.get(entry.key) ?? -1
     const stillATask = taskList.rows[previousIndex]?.kind === "task"
-    selectedTaskRowByEntryKey.set(entry.key, stillATask ? previousIndex : firstTaskIndex(taskList.rows))
+    const restoredIndex = stillATask ? previousIndex : firstTaskIndex(taskList.rows)
+    selectedTaskRowByEntryKey.set(entry.key, shownRowIndex(taskList.rows, restoredIndex, expandedTaskIds))
   }
   render()
 }
@@ -240,7 +245,8 @@ async function completeSelectedTask() {
   refreshGeneration += 1
   const remainingRows = withoutTaskAt(taskList.rows, taskRowIndex)
   taskListsByEntryKey.set(entry.key, { status: "loaded", rows: remainingRows })
-  selectedTaskRowByEntryKey.set(entry.key, nearestTaskIndex(remainingRows, taskRowIndex))
+  const nearestIndex = nearestTaskIndex(remainingRows, taskRowIndex)
+  selectedTaskRowByEntryKey.set(entry.key, shownRowIndex(remainingRows, nearestIndex, expandedTaskIds))
   statusMessage = "completing…"
   const wasCompleted = await applyTaskChange(
     todoist.completeTask(task.id),
@@ -318,7 +324,17 @@ function moveSelection(step: number) {
   const entry = activeEntry()
   if (taskList.status !== "loaded" || !entry) return
   const currentIndex = selectedTaskRowByEntryKey.get(entry.key) ?? firstTaskIndex(taskList.rows)
-  selectedTaskRowByEntryKey.set(entry.key, moveTaskSelection(taskList.rows, currentIndex, step))
+  selectedTaskRowByEntryKey.set(entry.key, moveTaskSelection(taskList.rows, currentIndex, step, expandedTaskIds))
+}
+
+function toggleSelectedTaskSubtasks() {
+  const entry = activeEntry()
+  const taskList = activeTaskList()
+  if (!entry || taskList.status !== "loaded") return
+  const taskRowIndex = selectedTaskRowByEntryKey.get(entry.key) ?? -1
+  const row = taskList.rows[taskRowIndex]
+  if (row?.kind !== "task" || subtaskCountAt(taskList.rows, taskRowIndex) === 0) return
+  if (!expandedTaskIds.delete(row.task.id)) expandedTaskIds.add(row.task.id)
 }
 
 function focusPanel(panel: Panel) {
@@ -366,8 +382,10 @@ function handleKey(key: string) {
     case "2":
       return focusPanel("projects")
     case "3":
-    case "\r":
       return focusPanel("tasks")
+    case "\r":
+    case " ":
+      return focusedPanel === "tasks" ? toggleSelectedTaskSubtasks() : focusPanel("tasks")
     case "\t":
     case "l":
     case "\x1b[C":

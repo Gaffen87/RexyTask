@@ -1,7 +1,7 @@
 // Draws the whole screen, in the style of lazygit, as lines of exactly the terminal's width.
 // It reads no state of its own.
 import type { ClaudeStatus, ClaudeStatuses } from "./claudeStatus.ts"
-import type { SidebarEntry, TaskRow } from "./rows.ts"
+import { subtaskCountAt, visibleRowIndexes, type SidebarEntry, type TaskRow } from "./rows.ts"
 import type { Due, Task } from "./todoist.ts"
 import { displayWidth, fitToWidth, plainText, style, truncateToWidth, wrapToWidth } from "./text.ts"
 
@@ -22,12 +22,22 @@ export type ViewState = {
   focusedPanel: Panel
   taskList: TaskListState
   selectedTaskRowIndex: number
+  expandedTaskIds: ReadonlySet<string>
   claudeStatuses: ClaudeStatuses
   statusMessage: string
   todayDate: string
 }
 
-const KEY_HINTS = "Move: ↑↓ | Panel: tab, 1-3 | Done: d | Undo: u | Send to Claude: s | Refresh: r | Quit: q"
+const KEY_HINTS: [key: string, action: string][] = [
+  ["↑↓", "move"],
+  ["tab", "panel"],
+  ["enter", "open/close"],
+  ["d", "done"],
+  ["u", "undo"],
+  ["s", "send to Claude"],
+  ["r", "refresh"],
+  ["q", "quit"],
+]
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export function localDateOf(moment: Date): string {
@@ -103,17 +113,19 @@ type PanelFrame = {
 
 function framePanel({ title, footer = "", width, height, isFocused, contentLines }: PanelFrame): string[] {
   if (height <= 0) return []
-  const border = isFocused ? (text: string) => style.green(style.bold(text)) : (text: string) => text
+  const focusedStyle = (text: string) => style.green(style.bold(text))
+  const border = isFocused ? focusedStyle : style.dim
+  const label = isFocused ? focusedStyle : (text: string) => text
   const innerWidth = width - 2
   const shownTitle = truncateToWidth(title, innerWidth - 2)
   const shownFooter = truncateToWidth(footer, innerWidth - 2)
   const topRule = "─".repeat(innerWidth - 1 - displayWidth(shownTitle))
   const bottomRule = "─".repeat(innerWidth - 1 - displayWidth(shownFooter))
-  const framed = [border(`╭─${shownTitle}${topRule}╮`)]
+  const framed = [border("╭─") + label(shownTitle) + border(`${topRule}╮`)]
   for (let lineIndex = 0; lineIndex < height - 2; lineIndex++) {
     framed.push(border("│") + (contentLines[lineIndex] ?? " ".repeat(innerWidth)) + border("│"))
   }
-  framed.push(border(`╰${bottomRule}${shownFooter}─╯`))
+  framed.push(border(`╰${bottomRule}`) + label(shownFooter) + border("─╯"))
   return framed.slice(0, height)
 }
 
@@ -142,15 +154,40 @@ function entryPanel(
 
 const SHORTEST_TITLE_WIDTH = 8
 
+function sectionLine(name: string, width: number): string {
+  const shownName = truncateToWidth(name, width)
+  const ruleWidth = width - displayWidth(shownName) - 1
+  const rule = ruleWidth > 0 ? ` ${style.dim("─".repeat(ruleWidth))}` : " ".repeat(ruleWidth + 1)
+  return style.bold(style.cyan(shownName)) + rule
+}
+
+type TaskLineOptions = {
+  width: number
+  todayDate: string
+  claudeStatuses: ClaudeStatuses
+  subtaskCount: number
+  isExpanded: boolean
+  showsDisclosure: boolean
+}
+
+function disclosureMarker({ subtaskCount, isExpanded, showsDisclosure }: TaskLineOptions): string {
+  if (!showsDisclosure) return ""
+  if (subtaskCount === 0) return "  "
+  return isExpanded ? "▾ " : "▸ "
+}
+
 // The trailing labels give way, last one first, before the title gets too short to read.
-function taskLine(row: TaskRow, width: number, todayDate: string, claudeStatuses: ClaudeStatuses): string {
-  if (row.kind === "section") return style.bold(style.cyan(fitToWidth(row.name, width)))
+function taskLine(row: TaskRow, options: TaskLineOptions): string {
+  const { width, todayDate, claudeStatuses, subtaskCount, isExpanded } = options
+  if (row.kind === "section") return sectionLine(row.name, width)
   const { task, depth, projectName } = row
-  const indent = "  ".repeat(Math.min(depth, Math.floor(width / 6)))
+  const indent = "  ".repeat(Math.min(depth, Math.floor(width / 6))) + disclosureMarker(options)
   const identity = (text: string) => text
   const claudeStatus = claudeStatuses[task.id]
   const claude = claudeStatus && claudeLabel(claudeStatus)
+  const isCollapsed = subtaskCount > 0 && !isExpanded
   const candidateLabels = [
+    isCollapsed && { text: `${subtaskCount} ${subtaskCount === 1 ? "subtask" : "subtasks"}`, color: style.dim },
     claude && { text: claude.text, color: claude.color },
     task.due && { text: dueLabel(task.due, todayDate), color: colorOfDue(task.due, todayDate) },
     projectName && { text: truncateToWidth(projectName, Math.floor(width * 0.25)), color: style.cyan },
@@ -164,7 +201,7 @@ function taskLine(row: TaskRow, width: number, todayDate: string, claudeStatuses
     titleWidth -= labelWidth
     trailing += `  ${(label.color ?? identity)(label.text)}`
   }
-  const title = fitToWidth(plainText(task.content), Math.max(0, titleWidth))
+  const title = fitToWidth(plainText(task.content), Math.max(0, titleWidth)).replace(/`[^`]+`/g, style.cyan)
   return `${indent}${priorityMarker(task.priority)} ${title}${trailing}`
 }
 
@@ -190,14 +227,28 @@ function tasksPanel(state: ViewState, width: number, height: number): string[] {
     contentLines = [style.dim(fitToWidth("No tasks", innerWidth))]
   } else {
     const { rows } = taskList
-    const scrollOffset = scrollOffsetFor(state.selectedTaskRowIndex, rows.length, height - 2)
-    contentLines = rows.slice(scrollOffset, scrollOffset + height - 2).map((row, visibleIndex) => {
-      const isSelected = row.kind === "task" && scrollOffset + visibleIndex === state.selectedTaskRowIndex
-      return highlight(taskLine(row, innerWidth, state.todayDate, state.claudeStatuses), isSelected, isFocused)
+    const shownIndexes = visibleRowIndexes(rows, state.expandedTaskIds)
+    const showsDisclosure = rows.some((row) => row.kind === "task" && row.depth > 0)
+    const scrollOffset = scrollOffsetFor(
+      shownIndexes.indexOf(state.selectedTaskRowIndex),
+      shownIndexes.length,
+      height - 2,
+    )
+    contentLines = shownIndexes.slice(scrollOffset, scrollOffset + height - 2).map((rowIndex) => {
+      const row = rows[rowIndex]!
+      const line = taskLine(row, {
+        width: innerWidth,
+        todayDate: state.todayDate,
+        claudeStatuses: state.claudeStatuses,
+        subtaskCount: subtaskCountAt(rows, rowIndex),
+        isExpanded: row.kind === "task" && state.expandedTaskIds.has(row.task.id),
+        showsDisclosure,
+      })
+      return highlight(line, row.kind === "task" && rowIndex === state.selectedTaskRowIndex, isFocused)
     })
-    const isTask = (row: TaskRow) => row.kind === "task"
-    const selectedPosition = rows.slice(0, state.selectedTaskRowIndex + 1).filter(isTask).length
-    footer = positionFooter(selectedPosition, rows.filter(isTask).length)
+    const shownTaskIndexes = shownIndexes.filter((rowIndex) => rows[rowIndex]?.kind === "task")
+    const selectedPosition = shownTaskIndexes.indexOf(state.selectedTaskRowIndex) + 1
+    footer = positionFooter(selectedPosition, shownTaskIndexes.length)
   }
   return framePanel({ title: "[3]─Tasks", footer, width, height, isFocused, contentLines })
 }
@@ -206,6 +257,7 @@ function detailLines(
   task: Task,
   projectName: string | undefined,
   claudeStatus: ClaudeStatus | undefined,
+  subtaskCount: number,
   width: number,
   todayDate: string,
 ): string[] {
@@ -221,6 +273,7 @@ function detailLines(
   if (task.due) lines.push(field("Due", dueLabel(task.due, todayDate)))
   if (projectName) lines.push(field("Project", projectName))
   if (task.labels?.length) lines.push(field("Labels", task.labels.join(", ")))
+  if (subtaskCount > 0) lines.push(field("Subtasks", String(subtaskCount)))
   if (task.description?.trim()) {
     lines.push(" ".repeat(width))
     const description = task.description.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ")
@@ -230,13 +283,15 @@ function detailLines(
 }
 
 function detailPanel(state: ViewState, width: number, height: number): string[] {
-  const selectedRow = state.taskList.status === "loaded" ? state.taskList.rows[state.selectedTaskRowIndex] : undefined
+  const rows = state.taskList.status === "loaded" ? state.taskList.rows : []
+  const selectedRow = rows[state.selectedTaskRowIndex]
   const contentLines =
     selectedRow?.kind === "task"
       ? detailLines(
           selectedRow.task,
           selectedRow.projectName,
           state.claudeStatuses[selectedRow.task.id],
+          subtaskCountAt(rows, state.selectedTaskRowIndex),
           width - 2,
           state.todayDate,
         )
@@ -245,10 +300,19 @@ function detailPanel(state: ViewState, width: number, height: number): string[] 
 }
 
 function hintLine(statusMessage: string, width: number): string {
-  const hints = truncateToWidth(KEY_HINTS, width - 2)
-  const status = truncateToWidth(statusMessage, Math.max(0, width - displayWidth(hints) - 4))
-  const gap = " ".repeat(Math.max(1, width - displayWidth(hints) - displayWidth(status) - 2))
-  return fitToWidth(` ${hints}${gap}${status}`, width).replace(hints, style.cyan(hints))
+  const status = truncateToWidth(statusMessage, Math.floor(width / 2))
+  const availableWidth = width - 3 - displayWidth(status)
+  let hints = ""
+  let hintsWidth = 0
+  for (const [key, action] of KEY_HINTS) {
+    const separator = hintsWidth > 0 ? "   " : ""
+    const hintWidth = displayWidth(`${separator}${key} ${action}`)
+    if (hintsWidth + hintWidth > availableWidth) break
+    hints += `${separator}${style.bold(style.cyan(key))} ${style.dim(action)}`
+    hintsWidth += hintWidth
+  }
+  const gap = " ".repeat(Math.max(0, width - 2 - hintsWidth - displayWidth(status)))
+  return ` ${hints}${gap}${status} `
 }
 
 export function renderScreen(state: ViewState, width: number, height: number): string[] {

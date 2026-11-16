@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { buildDatedTaskRows, buildProjectEntries, VIEW_ENTRIES } from "./rows.ts"
+import { buildDatedTaskRows, buildProjectEntries, buildProjectTaskRows, VIEW_ENTRIES } from "./rows.ts"
 import { displayWidth, truncateToWidth } from "./text.ts"
 import { dueLabel, renderScreen, scrollOffsetFor, type ViewState } from "./view.ts"
 
@@ -51,13 +51,36 @@ test("every line of the screen is exactly as wide as the terminal", () => {
       ),
     },
     selectedTaskRowIndex: 0,
+    expandedTaskIds: new Set(),
     claudeStatuses: { "1": { state: "working", note: "reading 📚", updatedAt: "2026-11-12T10:00:00Z" } },
     statusMessage: "updated 14:02",
     todayDate: TODAY,
   }
-  for (const [width, height] of [[40, 10], [47, 15], [80, 24], [133, 50]] as const) {
-    const lines = renderScreen(state, width, height)
-    expect(lines).toHaveLength(height)
-    for (const line of lines) expect(displayWidth(line)).toBe(width)
+  const nestedState: ViewState = {
+    ...state,
+    taskList: {
+      status: "loaded",
+      rows: buildProjectTaskRows(
+        [
+          { id: "parent", content: "Parent with `code` in a long title", priority: 1, projectId: "work" },
+          { id: "child", content: "Child", priority: 2, projectId: "work", parentId: "parent" },
+          { id: "sectioned", content: "Sectioned", priority: 1, projectId: "work", sectionId: "section" },
+        ],
+        [{ id: "section", name: "A section 仕事 with a long name", projectId: "work" }],
+      ),
+    },
   }
+  const expandedState: ViewState = { ...nestedState, expandedTaskIds: new Set(["parent"]) }
+  for (const screenState of [state, nestedState, expandedState]) {
+    for (const [width, height] of [[40, 10], [47, 15], [80, 24], [133, 50]] as const) {
+      const lines = renderScreen(screenState, width, height)
+      expect(lines).toHaveLength(height)
+      for (const line of lines) expect(displayWidth(line)).toBe(width)
+    }
+  }
+  const collapsedScreen = renderScreen(nestedState, 80, 24).join("\n")
+  expect(collapsedScreen).toContain("▸")
+  expect(collapsedScreen).toContain("1 subtask")
+  expect(collapsedScreen).not.toContain("Child")
+  expect(renderScreen(expandedState, 80, 24).join("\n")).toContain("Child")
 })
