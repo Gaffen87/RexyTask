@@ -18,7 +18,7 @@ td auth login
 
 The installer builds `bin/rexytask`, copies two Lua files into Rex's config directory (`~/.config/rex` by default), adds `require("rexytask")` to `init.lua`, and reloads Rex. Run it again after you pull an update, or after you move this folder or the `td` binary.
 
-Sign in with `td auth login --read-only` instead if Claude should not be able to change your tasks.
+Sign in with `td auth login --read-only` instead if Claude should not be able to change your tasks. You then cannot mark tasks as done from RexyTask either.
 
 To remove everything: `./uninstall.sh`.
 
@@ -34,6 +34,8 @@ The screen is laid out like [lazygit](https://github.com/jesseduffield/lazygit):
 | <kbd>Enter</kbd> | Go to the tasks |
 | <kbd>g</kbd> <kbd>G</kbd> | Jump to the first or last row |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
+| <kbd>d</kbd> | Mark the selected task as done, with its subtasks |
+| <kbd>u</kbd> | Reopen the task you last marked as done |
 | <kbd>s</kbd> | Send the selected task to Claude Code as a draft |
 | <kbd>r</kbd> | Load everything again |
 | <kbd>q</kbd> | Quit |

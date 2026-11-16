@@ -27,7 +27,7 @@ export type ViewState = {
   todayDate: string
 }
 
-const KEY_HINTS = "Move: ↑↓ | Panel: tab, 1-3 | Send to Claude: s | Refresh: r | Quit: q"
+const KEY_HINTS = "Move: ↑↓ | Panel: tab, 1-3 | Done: d | Undo: u | Send to Claude: s | Refresh: r | Quit: q"
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export function localDateOf(moment: Date): string {

@@ -65,6 +65,6 @@ else
   echo "reload Rex's config yourself: rex config reload" >&2
 fi
 if ! "$td_bin" auth status >/dev/null 2>&1; then
-  echo "sign in to Todoist once: td auth login --read-only"
+  echo "sign in to Todoist once: td auth login"
 fi
 echo "press shift+cmd+t, or run \"Toggle Todoist tasks\" from the command palette"

@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test"
-import { buildProjectTaskRows, buildProjectEntries, moveTaskSelection } from "./rows.ts"
+import {
+  buildProjectTaskRows,
+  buildProjectEntries,
+  moveTaskSelection,
+  nearestTaskIndex,
+  withoutTaskAt,
+  type TaskRow,
+} from "./rows.ts"
 import type { Task } from "./todoist.ts"
 
 function task(id: string, overrides: Partial<Task> = {}): Task {
@@ -53,4 +60,34 @@ test("task selection skips section headings and stops at the ends", () => {
   expect(moveTaskSelection(rows, 0, 1)).toBe(2)
   expect(moveTaskSelection(rows, 2, 1)).toBe(2)
   expect(moveTaskSelection(rows, 2, -5)).toBe(0)
+})
+
+function taskRow(id: string, depth = 0): TaskRow {
+  return { kind: "task", task: task(id), depth }
+}
+
+function rowNames(rows: TaskRow[]): string[] {
+  return rows.map((row) => (row.kind === "task" ? row.task.id : `# ${row.name}`))
+}
+
+test("removing a task takes its subtasks and an emptied section heading with it", () => {
+  const rows: TaskRow[] = [
+    taskRow("loose"),
+    { kind: "section", name: "First" },
+    taskRow("parent"),
+    taskRow("child", 1),
+    taskRow("grandchild", 2),
+    { kind: "section", name: "Second" },
+    taskRow("last"),
+  ]
+  expect(rowNames(withoutTaskAt(rows, 2))).toEqual(["loose", "# Second", "last"])
+  expect(rowNames(withoutTaskAt(rows, 3))).toEqual(["loose", "# First", "parent", "# Second", "last"])
+  expect(rowNames(withoutTaskAt(rows, 6))).toEqual(["loose", "# First", "parent", "child", "grandchild"])
+})
+
+test("the selection lands on the next task after a removal, or the previous one at the end", () => {
+  const rows: TaskRow[] = [taskRow("first"), { kind: "section", name: "Section" }, taskRow("second")]
+  expect(nearestTaskIndex(rows, 1)).toBe(2)
+  expect(nearestTaskIndex(rows, 3)).toBe(2)
+  expect(nearestTaskIndex([], 0)).toBe(-1)
 })

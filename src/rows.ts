@@ -105,6 +105,29 @@ export function moveTaskSelection(rows: TaskRow[], fromIndex: number, step: numb
   return selectedIndex
 }
 
+// Removes a task with the subtasks under it, and any section heading left with no tasks.
+export function withoutTaskAt(rows: TaskRow[], taskRowIndex: number): TaskRow[] {
+  const removedRow = rows[taskRowIndex]
+  if (removedRow?.kind !== "task") return rows
+  let endIndex = taskRowIndex + 1
+  while (endIndex < rows.length) {
+    const followingRow = rows[endIndex]
+    if (followingRow?.kind !== "task" || followingRow.depth <= removedRow.depth) break
+    endIndex += 1
+  }
+  const remainingRows = [...rows.slice(0, taskRowIndex), ...rows.slice(endIndex)]
+  return remainingRows.filter(
+    (row, rowIndex) => row.kind === "task" || remainingRows[rowIndex + 1]?.kind === "task",
+  )
+}
+
+// Returns the task row at that index, or else the closest one after it, or else before it.
+export function nearestTaskIndex(rows: TaskRow[], fromIndex: number): number {
+  const isTask = (row: TaskRow) => row.kind === "task"
+  const followingIndex = rows.findIndex((row, rowIndex) => rowIndex >= fromIndex && isTask(row))
+  return followingIndex >= 0 ? followingIndex : rows.findLastIndex(isTask)
+}
+
 export function firstTaskIndex(rows: TaskRow[]): number {
   return rows.findIndex((row) => row.kind === "task")
 }

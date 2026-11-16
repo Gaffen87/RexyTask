@@ -1,4 +1,4 @@
-// RexyTask: a read-only Todoist viewer for the terminal, on top of the td CLI.
+// RexyTask: a Todoist viewer for the terminal, on top of the td CLI.
 import { mkdirSync, watch } from "node:fs"
 import packageInfo from "../package.json"
 import { draftForTask, pasteIntoAgentPane, type AgentPane } from "./claudeDraft.ts"
@@ -17,10 +17,12 @@ import {
   buildProjectTaskRows,
   firstTaskIndex,
   moveTaskSelection,
+  nearestTaskIndex,
   VIEW_ENTRIES,
+  withoutTaskAt,
   type SidebarEntry,
 } from "./rows.ts"
-import { TodoistClient, TodoistError, type Project } from "./todoist.ts"
+import { TodoistClient, TodoistError, type Project, type Task } from "./todoist.ts"
 import { localDateOf, renderScreen, type Panel, type SourcePanel, type TaskListState } from "./view.ts"
 
 const ENTER_SCREEN = "\x1b[?1049h\x1b[?25l"
@@ -78,6 +80,8 @@ let claudeStatuses = readClaudeStatuses()
 let statusSettleTimer: ReturnType<typeof setTimeout> | undefined
 let refreshGeneration = 0
 let selectionSettleTimer: ReturnType<typeof setTimeout> | undefined
+let pendingTaskChangeCount = 0
+let lastCompletedTask: Task | undefined
 const taskListsByEntryKey = new Map<string, TaskListState>()
 const selectedTaskRowByEntryKey = new Map<string, number>()
 
@@ -115,7 +119,7 @@ function render() {
 function failedState(error: unknown): TaskListState {
   if (error instanceof TodoistError) {
     const hints = error.code === "NO_TOKEN"
-      ? ["Sign in once in a terminal: td auth login --read-only", "Then press r here."]
+      ? ["Sign in once in a terminal: td auth login", "Then press r here."]
       : error.hints
     return { status: "failed", message: error.message, hints }
   }
@@ -182,14 +186,14 @@ function refresh() {
 }
 
 // Reloads behind the rows on screen, so a change made by Claude does not blank the list.
-function refreshQuietly() {
+async function refreshQuietly() {
   refreshGeneration += 1
   const entry = activeEntry()
   for (const entryKey of [...taskListsByEntryKey.keys()]) {
     if (entryKey !== entry?.key) taskListsByEntryKey.delete(entryKey)
   }
   projectsLoading = loadProjects()
-  if (entry) void loadTaskList(entry)
+  await Promise.all([projectsLoading, entry && loadTaskList(entry)])
 }
 
 function watchClaudeStatuses() {
@@ -199,9 +203,67 @@ function watchClaudeStatuses() {
     clearTimeout(statusSettleTimer)
     statusSettleTimer = setTimeout(() => {
       claudeStatuses = readClaudeStatuses()
-      refreshQuietly()
+      void refreshQuietly()
     }, STATUS_SETTLE_MILLISECONDS)
   })
+}
+
+function errorMessageOf(error: unknown): string {
+  if (error instanceof TodoistError && error.code === "NO_TOKEN") return "sign in first: td auth login"
+  return error instanceof Error ? error.message : String(error)
+}
+
+// Reloads once the last change in flight has landed, so a reload cannot undo a later change on screen.
+async function applyTaskChange(change: Promise<void>, doneMessage: string, failurePrefix: string) {
+  pendingTaskChangeCount += 1
+  let failureMessage: string | undefined
+  try {
+    await change
+  } catch (error) {
+    failureMessage = `${failurePrefix}: ${errorMessageOf(error)}`
+  }
+  pendingTaskChangeCount -= 1
+  if (pendingTaskChangeCount === 0) await refreshQuietly()
+  statusMessage = failureMessage ?? doneMessage
+  render()
+  return !failureMessage
+}
+
+async function completeSelectedTask() {
+  const entry = activeEntry()
+  const taskList = activeTaskList()
+  if (!entry || taskList.status !== "loaded") return
+  const taskRowIndex = selectedTaskRowByEntryKey.get(entry.key) ?? -1
+  const row = taskList.rows[taskRowIndex]
+  if (row?.kind !== "task") return
+  const { task } = row
+  refreshGeneration += 1
+  const remainingRows = withoutTaskAt(taskList.rows, taskRowIndex)
+  taskListsByEntryKey.set(entry.key, { status: "loaded", rows: remainingRows })
+  selectedTaskRowByEntryKey.set(entry.key, nearestTaskIndex(remainingRows, taskRowIndex))
+  statusMessage = "completing…"
+  const wasCompleted = await applyTaskChange(
+    todoist.completeTask(task.id),
+    `done: ${task.content} (u to undo)`,
+    "could not complete",
+  )
+  if (wasCompleted) lastCompletedTask = task
+}
+
+async function reopenLastCompletedTask() {
+  const task = lastCompletedTask
+  if (!task) {
+    statusMessage = "nothing to undo"
+    return
+  }
+  lastCompletedTask = undefined
+  statusMessage = "reopening…"
+  const wasReopened = await applyTaskChange(
+    todoist.reopenTask(task.id),
+    `reopened: ${task.content}`,
+    "could not reopen",
+  )
+  if (!wasReopened) lastCompletedTask = task
 }
 
 async function sendSelectedTaskToClaude() {
@@ -316,6 +378,10 @@ function handleKey(key: string) {
     case "\x1b[D":
     case "\x1bOD":
       return focusNeighbourPanel(-1)
+    case "d":
+      return void completeSelectedTask()
+    case "u":
+      return void reopenLastCompletedTask()
     case "s":
       return void sendSelectedTaskToClaude()
     case "r":

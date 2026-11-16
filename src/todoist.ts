@@ -1,4 +1,4 @@
-// Reads Todoist data by running the official CLI, td, with --json.
+// Reads and completes Todoist tasks by running the official CLI, td, with --json.
 // The ordering field, childOrder, is only in the output with --full.
 
 export type Due = {
@@ -78,6 +78,14 @@ export class TodoistClient {
 
   listSections(projectId: string): Promise<Section[]> {
     return this.list<Section>(["section", "list", "--project", `id:${projectId}`])
+  }
+
+  async completeTask(taskId: string): Promise<void> {
+    await this.run(["task", "complete", `id:${taskId}`, "--json"])
+  }
+
+  async reopenTask(taskId: string): Promise<void> {
+    await this.run(["task", "uncomplete", `id:${taskId}`, "--json"])
   }
 
   private async list<Item>(commandArguments: string[]): Promise<Item[]> {
